@@ -1,0 +1,446 @@
+# 导入所需要的库
+import xlrd, xlwt, pymysql, os, numpy
+
+# 全局变量Rank（excel中排名函数）
+Rank = []
+rank = ['B', 'D', 'F', 'H', 'J', 'L']
+for i in range(len(rank)):
+    Rank.append('=RANK.EQ(' + rank[i] + '2,$' + rank[i] + '$2:$' + rank[i] + '$32,0)')
+
+# 全局变量（指标名及其对应的一二级指标个数和）
+# 分大小写是因为mysql表名只能小写
+Olevel = ['A1', 'A2', 'A4']
+olevel = ['a1', 'a2', 'a4']
+Nlevel = [4, 6, 5]
+
+# （得到用户输入的）年份(全局变量)
+Year = ['2014', '2015', '2016']
+#while True:#Year.append(input('please input one year:'))#if input('do you want to input another year?(y/n)') != 'y':#break
+
+# 自定义函数-计算基尼系数的函数
+def Gini(invalue):
+    icum = numpy.cumsum(sorted(numpy.append(invalue, 0)))
+    isum = icum[-1]
+    xarray = numpy.array(range(0, len(icum))) / numpy.float(len(icum)-1)
+    yarray = icum / isum
+    B = numpy.trapz(yarray, x=xarray)
+    A = 0.5 - B
+    return A / (A+B)
+
+# #建议将人口数据精确到小数点后一位并作为整体参考变量
+
+# 连接excel打开文件,得到Tabledata（全局变量）,输入文件名时注意要与后面的数据导入[Tabledata]一一对应
+# 0:informA,1:dataA,2:informB,3:dataB
+Tabledata = []
+try:
+    WBname = []
+    workbook = []
+    while True:
+        WBname.append(input('please input your workbook name:'))
+        if input('do you want to input another name?(y/n)') != 'y':
+            break
+    for i in range(len(WBname)):
+        workbook = xlrd.open_workbook('D:\\for python\\' + WBname[i] + '.xlsx')
+        tabledata = []
+        for j in range(len(workbook.sheets())):
+            tabledata.append(workbook.sheets()[j])
+        Tabledata.append(tabledata)
+    print('文件打开成功')
+except Exception as e:
+    print('文件打开失败', e)
+    os._exit()
+
+# 连接mysql,建立游标
+conn = pymysql.connect(
+    host='localhost',
+    user='root',
+    passwd='123456',
+    port=3308,
+    charset='utf8'
+)
+cur = conn.cursor()
+
+# 自定义函数把[执行-回滚-提交]简化:参数1-执行语句的列表，参数2-输出文字
+def Do_mysql(sql_list,output_text):
+    try:
+        for i in range(len(sql_list)):
+            cur.execute(sql_list[i])
+    except Exception as e:
+        conn.rollback()
+        print((output_text + '失败'), e)
+        os._exit()
+    else:
+        conn.commit()
+        print((output_text + '成功'), cur.rowcount)
+
+# #test1数据库名后期考虑改动得更加正式
+
+# 清空需使用的数据库并进入
+restar_sql1 = """drop database if exists test1"""
+restar_sql2 = """create database test1"""
+restar_sql3 = """use test1"""
+R_sql = [restar_sql1, restar_sql2, restar_sql3]
+Do_mysql(R_sql, '初始化')
+
+# 创建A表的sql
+create_sql1 = """create table ewmprovince(
+                        province varchar(4) primary key not null,
+                        porder int unsigned not null,
+                        ewm varchar(4) not null
+                        )engine=InnoDB auto_increment=1"""
+create_sql2 = """create table alevelweight(
+                        name varchar(30) not null,
+                        alllevel varchar(8) primary key not null,
+                        weight float not null
+                        )engine=InnoDB auto_increment=1"""
+create_sql3 = """create table apro(
+                        tlevel varchar(8) primary key not null,
+                        prosymbol int not null,
+                        d_null int
+                        )engine=InnoDB auto_increment=1"""
+create_sql4 = """create table asuplevel(
+                        alllevel varchar(30) primary key not null,
+                        suplevel varchar(8) not null,
+                        d_null int
+                        )engine=InnoDB auto_increment=1"""
+create_sql5 = """create table adata(
+                        id int unsigned primary key not null auto_increment,
+                        province varchar(4) not null,
+                        year int unsigned not null,
+                        flevel varchar(30),
+                        fvalue float,
+                        foreign key(province) references ewmprovince(province),
+                        foreign key(flevel) references asuplevel(alllevel)
+                        )engine=InnoDB auto_increment=1"""
+C_sql = [create_sql1, create_sql2, create_sql3, create_sql4, create_sql5]
+Do_mysql(C_sql, 'A表创建')
+
+# 读取informA中数据，添加到数据库中表,注意表顺序应当与excel中相同
+#加入d_null列是因为列数一致可一次性导入更加方便
+wt_sql1 = """insert into ewmprovince(porder,province,ewm)values(%s,%s,%s)"""
+wt_sql2 = """insert into asuplevel(suplevel,alllevel,d_null)values(%s,%s,%s)"""
+wt_sql3 = """insert into alevelweight(name,alllevel,weight)values(%s,%s,%s)"""
+wt_sql4 = """insert into apro(prosymbol,tlevel,d_null)values(%s,%s,%s)"""
+W_sql = [wt_sql1, wt_sql2, wt_sql3, wt_sql4]
+try:
+    for i in range(len(Tabledata[0])):
+        for j in range(Tabledata[0][i].nrows):
+            if (Tabledata[0][i].cell(j,0).ctype) == 2:
+                cur.execute(W_sql[i], (int(Tabledata[0][i].cell(j, 0).value), Tabledata[0][i].cell(j, 1).value, Tabledata[0][i].cell(j, 2).value))
+            else:
+                cur.execute(W_sql[i], (Tabledata[0][i].cell(j, 0).value, Tabledata[0][i].cell(j, 1).value, Tabledata[0][i].cell(j, 2).value))
+except Exception as e:
+    conn.rollback()
+    print('informA导入失败', e)
+else:
+    conn.commit()
+    print('informA导入成功', cur.rowcount)
+
+# 读取basic data中的数据，添加到数据库中表
+wt_sql = """insert into adata(year,province,flevel,fvalue)values(%s,%s,%s,%s)"""
+try:
+    for i in range(len(Tabledata[1])):
+        for k in range(1, Tabledata[1][i].ncols):
+            for j in range(1, Tabledata[1][i].nrows):
+                cur.execute(wt_sql, (Tabledata[1][i].cell(0,0).value, Tabledata[1][i].cell(j,0).value, Tabledata[1][i].cell(0,k).value, Tabledata[1][i].cell(j,k).value))
+except Exception as e:
+    conn.rollback()
+    print('dataA导入失败', e)
+else:
+    conn.commit()
+    print('dataA导入成功', cur.rowcount)
+
+
+
+# A1,A2,A4
+# 备份fdata表，根据表关系加上tlevel，删去fname，group by同时sum值
+pro4_sql1 = """create table ufdata select * from adata"""
+pro4_sql2 = """alter table ufdata add ftlevel varchar(8) not null"""
+pro4_sql3 = """update ufdata inner join asuplevel on ufdata.flevel = asuplevel.alllevel set ufdata.ftlevel = asuplevel.suplevel"""
+pro4_sql4 = """create table uftdata as (select year,province,sum(fvalue) as uftvalue,ftlevel from ufdata group by year,province,ftlevel)"""
+P4_sql = [pro4_sql1, pro4_sql2, pro4_sql3, pro4_sql4]
+Do_mysql(P4_sql, '4预处理')
+
+# 需要的除以[人口],得到三级指标的数据表ftdata
+pro3_sql1 = """create table fftdata as(select year,province,uftvalue as fftvalue,ftlevel from uftdata where ftlevel not like 'all')"""
+pro3_sql2 = """alter table fftdata add column prosymbol float"""
+pro3_sql3 = """update fftdata inner join apro on apro.tlevel=fftdata.ftlevel set fftdata.prosymbol=apro.prosymbol"""
+pro3_sql4 = """alter table fftdata add column uperson float"""
+pro3_sql5 = """update fftdata set uperson=1 where prosymbol is null"""
+P3_sql = [pro3_sql1, pro3_sql2, pro3_sql3, pro3_sql4, pro3_sql5]
+for i in range(len(Year)):
+    P3_sql.append('create table ' + Year[i] + 'person as(select province,uftvalue as yperson from uftdata where ftlevel="all" and year=' + Year[i] + ')')
+    P3_sql.append('update fftdata inner join ' + Year[i] + 'person on fftdata.province=' + Year[i] + 'person.province set fftdata.uperson=' + Year[i] + 'person.yperson where fftdata.prosymbol=(-11) and fftdata.year=' + Year[i])
+P3_sql.append('create table ftdata as (select year,province,(fftvalue/uperson) as ftvalue,ftlevel from fftdata)')
+Do_mysql(P3_sql, '4->3')
+
+# 取得最大值并全体除以，乘以权重, 得到二级指标表ttdata
+pro2_sql1 = """create table uttdata as(select year,province,ftvalue as uttvalue,ftlevel from ftdata)"""
+pro2_sql2 = """alter table uttdata add column dweight float"""
+pro2_sql3 = """update uttdata inner join alevelweight on uttdata.ftlevel=alevelweight.alllevel set uttdata.dweight=alevelweight.weight"""
+pro2_sql4 = """alter table uttdata add column ttlevel varchar(8)"""
+pro2_sql5 = """update uttdata inner join asuplevel on uttdata.ftlevel=asuplevel.alllevel set uttdata.ttlevel=asuplevel.suplevel"""
+pro2_sql6 = """alter table uttdata add column dmax float"""
+P2_sql = [pro2_sql1, pro2_sql2, pro2_sql3, pro2_sql4, pro2_sql5,pro2_sql6]
+for i in range(len(Year)):
+    P2_sql.append('create table ' + Year[i] + 'max as (select ftlevel,max(ftvalue) as dmax from ftdata where year=' + Year[i] + ' group by ftlevel)')
+    P2_sql.append('update uttdata inner join ' + Year[i] + 'max on uttdata.ftlevel=' + Year[i] + 'max.ftlevel set uttdata.dmax=' + Year[i] + 'max.dmax where uttdata.year=' +Year[i])
+P2_sql.append('update uttdata set dmax=100 where ftlevel="A431"')
+P2_sql.append('create table fttdata as (select year,province,ttlevel,ftlevel,((uttvalue/dmax)*dweight) as fttvalue from uttdata)')
+P2_sql.append('create table ttdata as (select year,province,ttlevel,sum(fttvalue) as ttvalue from fttdata group by year,province,ttlevel)')
+Do_mysql(P2_sql, '3->2')
+
+# 2->1，得到todata
+pro1_sql1 = """create table utodata as(select year,province,ttlevel,ttvalue as utovalue from ttdata)"""
+pro1_sql2 = """alter table utodata add column dweight float"""
+pro1_sql3 = """update utodata inner join alevelweight on utodata.ttlevel=alevelweight.alllevel set utodata.dweight=alevelweight.weight"""
+pro1_sql4 = """alter table utodata add column tolevel varchar(8)"""
+pro1_sql5 = """update utodata inner join asuplevel on utodata.ttlevel=asuplevel.alllevel set utodata.tolevel=asuplevel.suplevel"""
+pro1_sql6 = """create table ftodata as (select year,province,ttlevel,tolevel,(utovalue*dweight) as ftovalue from utodata)"""
+pro1_sql7 = """create table todata as(select year,province,tolevel,sum(ftovalue) as tovalue from ftodata group by year,province,tolevel)"""
+P1_sql = [pro1_sql1, pro1_sql2, pro1_sql3, pro1_sql4, pro1_sql5, pro1_sql6, pro1_sql7]
+Do_mysql(P1_sql, '2->1')
+
+## 导出excel文件时，首先先删除重名文件，(添加省份固定序号，创建表时按照分组排序)【使得结果更加靠谱】
+
+# 制表
+A1_sql = []
+WB = []
+Sheets = []
+Tablename = []
+for j in range(len(Olevel)):
+    sheets = []
+    tablename = []
+    wb = xlwt.Workbook()
+    WB.append(wb)
+    for i in range(len(Year)):
+        tablename.append(Year[i] + '_' + olevel[j])
+        sheets.append(WB[j].add_sheet(u'%s' % tablename[i], cell_overwrite_ok=True))
+        A1_sql.append('create table ' + Year[i] + '_' + Olevel[j] + ' as (select province,ttlevel as level,ttvalue as value from ttdata where year=' + Year[i] + ' and ttlevel like "' + Olevel[j] + '%")')
+        A1_sql.append('insert into ' + Year[i] + '_' + Olevel[j] + '(province,level,value) select province,tolevel as level,tovalue as value from todata where year=' + Year[i] + ' and tolevel like "' + Olevel[j] + '%"')
+        if len(tablename) == len(Year):
+            Tablename.append(tablename)
+            Sheets.append(sheets)
+Do_mysql(A1_sql, 'A124制表')
+# 导出
+for i in range(len(olevel)):
+    for j in range(len(Year)):
+        cur.execute('select * from ' + Tablename[i][j])
+        conn.commit()
+        Results = cur.fetchall()
+        Sheets[i][j].write(0, 0, u'%s' % Year[j])
+        for k in range(Nlevel[i]):
+            Sheets[i][j].write(0, (k * 2 + 1), u'%s' % Results[k * 31][1])
+            Sheets[i][j].write(0, (k + 1) * 2, u'rank')
+            Sheets[i][j].write(1, (k + 1) * 2, u'%s' % Rank[k])
+            for l in range(1,32):
+                Sheets[i][j].write(l, 0, u'%s' % Results[l-1][0])
+                Sheets[i][j].write(l, (k * 2 + 1), u'%s' % Results[l - 1 + k*31][2])
+    WB[i].save('D:\\for python\\' + Olevel[i] + '.xls')
+
+
+# A3
+# 制表
+tablename = []
+A2_sql = []
+for i in range(len(Year)):
+    tablename.append(Year[i] + '_a3')
+    A2_sql.append('create table ' + tablename[i] + ' as (select province,value as A1 from ' + Tablename[0][i] + ' where level="A1")')
+    A2_sql.append('alter table ' + tablename[i] + ' add column A2 float')
+    A2_sql.append('update ' + tablename[i] + ' inner join ' + Tablename[1][i] + ' on ' + tablename[i] + '.province=' + Tablename[1][i] + '.province set ' + tablename[i] + '.A2=' + Tablename[1][i] + '.value where ' + Tablename[1][i] + '.level="A2"')
+Do_mysql(A2_sql, 'A3制表')
+# 导出
+wb = xlwt.Workbook()
+sheets = wb.add_sheet(u'2014-2016', cell_overwrite_ok=True)
+for i in range(len(Year)):
+    sheets.write(0, (i * 2) + 1, u'%s' % tablename[i])
+    sheets.write(0, (i + 1) * 2, u'rank')
+    sheets.write(1, (i + 1) * 2, u'%s' % Rank[i])
+    cur.execute('select province,A1/A2 as value from ' + tablename[i])
+    conn.commit()
+    Results = cur.fetchall()
+    for j in range(1,32):
+        sheets.write(j, (i * 2) + 1, u'%s' % Results[j - 1][1])
+        if i == 0:
+            sheets.write(0, 0, u'province')
+            sheets.write(j, 0, u'%s' % Results[j - 1][0])
+wb.save('D:\\for python\\A3.xls')
+
+
+
+# B
+# 创建B表的sql,注意表顺序应当与excel中相同
+bcreate_sql1 = """create table provincecity(
+                        city varchar(20) primary key not null,
+                        province varchar(4) not null,
+                        maincity int not null
+                        )engine=InnoDB auto_increment=1"""
+bcreate_sql2 = """create table blevelweight(
+                        name varchar(30) not null,
+                        level varchar(8) primary key not null,
+                        weight float not null
+                        )engine=InnoDB auto_increment=1"""
+bcreate_sql3 = """create table bpro(
+                        name varchar(30) not null,
+                        level varchar(8) primary key not null,
+                        prosymbol int not null
+                        )engine=InnoDB auto_increment=1"""
+bcreate_sql4 = """create table bsuplevel(
+                        level varchar(8) primary key not null,
+                        suplevel varchar(8) not null,
+                        d_null int
+                        )engine=InnoDB auto_increment=1"""
+bcreate_sql5 = """create table bdata(
+                        id int unsigned primary key not null auto_increment,
+                        province varchar(4) not null,
+                        city varchar(20) not null,
+                        year int unsigned not null,
+                        name varchar(30) not null,
+                        pop float not null,
+                        fvalue float not null
+                        )engine=InnoDB auto_increment=1"""
+BC_sql = [bcreate_sql1, bcreate_sql2, bcreate_sql3, bcreate_sql4, bcreate_sql5]
+Do_mysql(BC_sql, 'B表创建')
+
+# 读取informB中数据，添加到数据库中表
+bwt_sql1 = """insert into provincecity(maincity,city,province)values(%s,%s,%s)"""
+bwt_sql2 = """insert into bsuplevel(level,suplevel,d_null)values(%s,%s,%s)"""
+bwt_sql3 = """insert into blevelweight(name,level,weight)values(%s,%s,%s)"""
+bwt_sql4 = """insert into bpro(prosymbol,name,level)values(%s,%s,%s)"""
+BW_sql = [bwt_sql1, bwt_sql2, bwt_sql3, bwt_sql4]
+try:
+    for i in range(len(Tabledata[2])):
+        for j in range(Tabledata[2][i].nrows):
+            if (Tabledata[2][i].cell(j,0).ctype) == 2:
+                cur.execute(BW_sql[i], (int(Tabledata[2][i].cell(j, 0).value), Tabledata[2][i].cell(j, 1).value, Tabledata[2][i].cell(j, 2).value))
+            else:
+                cur.execute(BW_sql[i], (Tabledata[2][i].cell(j, 0).value, Tabledata[2][i].cell(j, 1).value, Tabledata[2][i].cell(j, 2).value))
+except Exception as e:
+    conn.rollback()
+    print('informB导入失败', e)
+else:
+    conn.commit()
+    print('informB导入成功', cur.rowcount)
+
+# 读取dataB中的数据，添加到数据库中表
+bwt_sql = """insert into bdata(year,city,province,pop,name,fvalue)values(%s,%s,%s,%s,%s,%s)"""
+try:
+    for i in range(len(Tabledata[3])):
+        for k in range(3, Tabledata[3][i].ncols):
+            for j in range(1, Tabledata[3][i].nrows):
+                cur.execute(bwt_sql, (Tabledata[3][i].cell(0, 0).value, Tabledata[3][i].cell(j, 0).value, Tabledata[3][i].cell(j, 1).value, Tabledata[3][i].cell(j, 2).value, Tabledata[3][i].cell(0, k).value, Tabledata[3][i].cell(j, k).value))
+except Exception as e:
+    conn.rollback()
+    print('dataB导入失败', e)
+else:
+    conn.commit()
+    print('dataB导入成功', cur.rowcount)
+
+# 处理基础数据，得到二级指标数据
+bpro4_sql1 = """create table buftdata select * from bdata"""
+bpro4_sql2 = """alter table buftdata add (flevel varchar(8) not null,ftlevel varchar(8) not null,pro int not null)"""
+bpro4_sql3 = """update buftdata inner join bpro on buftdata.name = bpro.name set buftdata.pro = bpro.prosymbol,buftdata.flevel = bpro.level"""
+bpro4_sql4 = """update buftdata inner join bsuplevel on buftdata.flevel = bsuplevel.level set buftdata.ftlevel = bsuplevel.suplevel"""
+bpro4_sql5 = """create table bftdata as (select year,city,province,sum(fvalue*pro) as ftvalue,ftlevel,pop from buftdata group by year,city,province,ftlevel,pop)"""
+BP4_sql = [bpro4_sql1, bpro4_sql2, bpro4_sql3, bpro4_sql4, bpro4_sql5]
+Do_mysql(BP4_sql, 'B.4->3')
+
+# 处理二级数据，得到一级指标指数数据，预备得出综合指数
+bpro3_sql1 = """create table buttdata select * from bftdata"""
+bpro3_sql2 = """alter table buttdata add (ttlevel varchar(8) not null,weight float not null,sumpop float not null,sumftvalue float not null)"""
+bpro3_sql3 = """update buttdata inner join bsuplevel on buttdata.ftlevel=bsuplevel.level set buttdata.ttlevel=bsuplevel.suplevel"""
+bpro3_sql4 = """update buttdata inner join blevelweight on buttdata.ftlevel=blevelweight.level set buttdata.weight=blevelweight.weight"""
+BP3_sql = [bpro3_sql1, bpro3_sql2, bpro3_sql3, bpro3_sql4]
+for i in range(len(Year)):
+    BP3_sql.append('create table ' + Year[i] + 'sumvalue as (select province,ftlevel,sum(ftvalue) as sumvalue from bftdata where year=' + Year[i] + ' group by ftlevel,province)')
+    BP3_sql.append('create table ' + Year[i] + 'sumpop as (select province,sum(pop) as sumpop from bftdata where year=' + Year[i] + ' and ftlevel="B41" group by province)')
+    BP3_sql.append('update buttdata inner join ' + Year[i] + 'sumvalue on buttdata.ftlevel=' + Year[i] + 'sumvalue.ftlevel set buttdata.sumftvalue=' + Year[i] + 'sumvalue.sumvalue where buttdata.province=' + Year[i]+ 'sumvalue.province and year=' + Year[i])
+    BP3_sql.append('update buttdata inner join ' + Year[i] + 'sumpop on buttdata.province=' + Year[i] + 'sumpop.province set buttdata.sumpop=' + Year[i] + 'sumpop.sumpop where year=' + Year[i])
+BP3_sql.append('create table bttdata as (select year,city,province,ttlevel,sum((sumpop*ftvalue*weight)/(pop*sumftvalue*100)) as ttvalue from buttdata group by year,city,province,ttlevel)')
+Do_mysql(BP3_sql, 'B.3->2')
+
+# 将一级数据转化为基尼系数
+Bresults = []
+try:
+    BLevel = ['B1', 'B2', 'B3','B4']
+    cur.execute('select province from ewmprovince')
+    conn.commit()
+    r = cur.fetchall()
+    Province = list(sum(r, ()))
+    for i in range(len(Year)):
+        for j in range(len(BLevel)):
+            for k in range(len(Province)):
+                cur.execute('select pop*10 from bftdata where year=' + Year[i] + ' and province="' + Province[k] + '" group by pop')
+                conn.commit()
+                r = cur.fetchall()
+                pop = list(sum(r, ()))
+                cur.execute('select ttvalue from bttdata where year=2016 and province="' + Province[k] + '" and ttlevel="' + BLevel[j] + '"')
+                conn.commit()
+                r = cur.fetchall()
+                ttvalue = invalue = rvalue = []
+                for l in range(len(pop)):
+                    ttvalue.append(list(r[l]))
+                for m in range(len(pop)):
+                    rvalue.append(ttvalue[m]*int(pop[m]))
+                    invalue = sum(rvalue, [])
+                Bresults.append((Year[i], Province[k], BLevel[j], float(Gini(invalue))))
+except Exception as e:
+    print('基尼系数运算失败', e)
+    os._exit()
+else:
+    print('基尼系数运算成功')
+
+# 将计算出来的基尼系数导入新建表
+bp_sql1 = """create table butodata(
+                        id int unsigned primary key not null auto_increment,
+                        province varchar(4) not null,
+                        year int unsigned not null,
+                        tolevel varchar(8) not null,
+                        utovalue float not null
+                        )engine=InnoDB auto_increment=1"""
+cur.execute(bp_sql1)
+conn.commit()
+bp_sql2 = """insert into butodata(year,province,tolevel,utovalue)values(%s,%s,%s,%s)"""
+try:
+    for i in range(len(Bresults)):
+        cur.execute(bp_sql2, Bresults[i])
+except Exception as e:
+    conn.rollback()
+    print('butodata导入失败', e)
+else:
+    conn.commit()
+    print('butodata导入成功', cur.rowcount)
+
+# 依照省基尼系数，得出省一级四指标得分，得到综合得分
+bpro2_sql1 = """create table btodata as (select year,province,tolevel as tolevel,(1-utovalue)*100 as tovalue from butodata)"""
+bpro2_sql2 = """alter table btodata add (weight float not null,sore float not null)"""
+bpro2_sql3 = """update btodata inner join blevelweight on btodata.tolevel=blevelweight.level set btodata.weight=blevelweight.weight"""
+bpro2_sql4 = """create table sore as (select year,province,sum(weight*tovalue) as sore from btodata group by year,province)"""
+bpro2_sql5 = """alter table btodata drop weight"""
+BP2_sql = [bpro2_sql1, bpro2_sql2, bpro2_sql3, bpro2_sql4, bpro2_sql5]
+Do_mysql(BP2_sql,'B.2->1')
+
+# 制表(添加省份固定序号，创建表时按照分组排序)
+bpro1_sql1 = """create table bpdata as (select year,province,sum(ftvalue) as value,ftlevel as level,sum(pop) as pop from bftdata group by year,province,ftlevel)"""
+bpro1_sql2 = """alter table bpdata add (suplevel varchar(8) not null,weight float not null,sumpop float not null,sumvalue float not null)"""
+bpro1_sql3 = """update bpdata inner join bsuplevel on bpdata.level=bsuplevel.level set bpdata.suplevel=bsuplevel.suplevel"""
+bpro1_sql4 = """update bpdata inner join blevelweight on bpdata.level=blevelweight.level set bpdata.weight=blevelweight.weight"""
+bpro1_sql5 = """create table psumpop as (select year,sum(pop) as sumpop from bpdata where level='B41' group by year)"""
+bpro1_sql6 = """create table psumvalue as (select year,level,sum(value) as sumvalue from bpdata group by year,level)"""
+bpro1_sql7 = """update bpdata inner join psumpop on bpdata.year=psumpop.year set bpdata.sumpop=psumpop.sumpop where bpdata.year=psumpop.year"""
+bpro1_sql8 = """update bpdata inner join psumvalue on bpdata.year=psumvalue.year set bpdata.sumvalue=psumpop.sumvalue where bpdata.year=psumpop.year and bpdata.level=psumvalue.level"""
+bpro1_sql9 = """create table pdata as (select year,province,suplevel as level,sum((sumpop*value*weight)/(pop*sumvalue*100)) as value from bpdata group by year,province,suplevel)"""
+bpro1_sql10 = """alter table pdata add weight float not null"""
+bpro1_sql11 = """update pdata inner join blevelweight on pdata.level=blevelweight.level set pdata.weight=blevelweight.weight"""
+bpro1_sql12 = """create table r as (select year,province,level='Z',sum(value) from pdata group by year,province,level)"""
+BP1_sql = [bpro1_sql1, bpro1_sql2, bpro1_sql3, bpro1_sql4, bpro1_sql5, bpro1_sql6, bpro1_sql7, bpro1_sql8, bpro1_sql9]
+
+
+# 导出（导出为两个表：B1,B2。B1为各省一级指标指数/综合指数）
+
+
+# 关闭与数据库的连接，程序运行结束退出
+cur.close()
+conn.close()
+exit(0)
+#下一步改进考虑：尽量使原始数据无需处理直接可以导
